@@ -1,3 +1,10 @@
+Metadata-Version: 2.4
+Name: pdf-compare-ai-tool
+Version: 0.1.0
+Summary: AI-driven PDF comparison (baseline & pro)
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+
 # pdf_compare_ai_tool
 PDF comparison ai tool with python with libraries 
 0) Project scaffold & environment (run in terminal)
@@ -306,18 +313,18 @@ Copilot: Create a full python script pdf_compare_pro.py that:
 
 12) After code generation — verify & run
 
-Install console scripts (one-time):
+Run baseline (new package path):
 
-pip install -e .
-
-Run baseline:
-
-pdf-compare-baseline assets/sample_P001.pdf assets/sample_P002.pdf --out out_baseline.html
+# Windows PowerShell: ensure src/ is on PYTHONPATH for module imports
+$env:PYTHONPATH = "src"
+python -m pdf_compare.baseline assets/sample_P001.pdf assets/sample_P002.pdf --out out_baseline.html
 
 
-Run pro:
+Run pro (new package path):
 
-pdf-compare-pro assets/sample_P001.pdf assets/sample_P002.pdf --out out_pro.html
+# Windows PowerShell
+$env:PYTHONPATH = "src"
+python -m pdf_compare.pro assets/sample_P001.pdf assets/sample_P002.pdf --out out_pro.html
 
 
 Run Streamlit:
@@ -327,7 +334,6 @@ streamlit run src/app/streamlit_app.py
 Notes:
 - If you see a notice about T5Tokenizer legacy behavior, the project config suppresses it by default.
 - To enable FLAN‑T5 summarization, install sentencepiece: `pip install sentencepiece` and restart Streamlit/CLI.
-- Alternatively, you can run via module path without installing by setting PYTHONPATH, but console scripts are recommended.
 
 13) Troubleshooting tips
 
