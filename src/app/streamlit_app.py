@@ -24,6 +24,8 @@ from pdf_compare.visual import (
     merge_side_by_side,
     render_page_pair_png_highlight,
     merge_side_by_side_with_text_highlight,
+    text_diff_rects,
+    text_diff_stats,
 )  # type: ignore
 
 st.set_page_config(page_title="PDF Compare", page_icon="🧾", layout="wide")
@@ -226,23 +228,74 @@ def _side_by_side_flow():
         bytes_b = file_b.read()
         with fitz.open(stream=bytes_a, filetype="pdf") as da, fitz.open(stream=bytes_b, filetype="pdf") as db:
             total = min(len(da), len(db))
+        
+        # Compute total differences if in Compare Text mode
+        if mode == "Compare Text":
+            with st.spinner("Analyzing differences across all pages…"):
+                total_text = 0
+                total_numbers = 0
+                total_images = 0
+                page_stats = []
+                
+                for i in range(total):
+                    stats = text_diff_stats(bytes_a, bytes_b, i)
+                    page_stats.append(stats)
+                    total_text += stats["text_changes"]
+                    total_numbers += stats["number_changes"]
+                    total_images += stats["image_changes"]
+                
+                total_all = total_text + total_numbers
+                
+                # Display summary with breakdown
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.metric("� Text Changes", total_text)
+                with col2:
+                    st.metric("🔢 Number Changes", total_numbers)
+                with col3:
+                    st.metric("🖼️ Image Changes", total_images)
+                with col4:
+                    st.metric("📊 Total Words", total_all)
+        
         st.caption(f"Showing {total} paired pages")
         if total > 1:
             pg = st.slider("Page", 1, total, 1, key="page_visual")
         else:
             pg = 1
+        
+        # Show per-page difference count in Compare Text mode
+        if mode == "Compare Text" and 'page_stats' in locals():
+            curr_stats = page_stats[pg - 1]
+            parts = []
+            if curr_stats["text_changes"] > 0:
+                parts.append(f"{curr_stats['text_changes']} text")
+            if curr_stats["number_changes"] > 0:
+                parts.append(f"{curr_stats['number_changes']} numbers")
+            if curr_stats["image_changes"] > 0:
+                parts.append(f"{curr_stats['image_changes']} images")
+            
+            if parts:
+                st.caption(f"🔍 Page {pg}: {', '.join(parts)} changed")
+            else:
+                st.caption(f"✅ Page {pg}: No differences detected")
+        
         z = st.select_slider("Zoom", options=[1.2, 1.5, 1.8, 2.0, 2.5, 3.0], value=1.8, key="zoom_visual")
+        
+        # Add legend for Compare Text mode
+        if mode == "Compare Text":
+            st.info("💡 **Yellow boxes** outline text/number differences between the two PDFs")
+        
         ca, cb = st.columns(2, gap="large")
         with st.spinner("Rendering page images…"):
             if mode == "Visual":
                 img_a = _render_png_bytes(bytes_a, pg - 1, z)
                 img_b = _render_png_bytes(bytes_b, pg - 1, z)
             else:
-                img_a, img_b = render_page_pair_png_highlight(bytes_a, bytes_b, pg - 1, zoom=z)
+                img_a, img_b = render_page_pair_png_highlight(bytes_a, bytes_b, pg - 1, zoom=z, opacity=0.18)
         with ca:
-            st.image(img_a, caption=f"A · Page {pg}", width='stretch')
+            st.image(img_a, caption=f"A · Page {pg}", use_container_width=True)
         with cb:
-            st.image(img_b, caption=f"B · Page {pg}", width='stretch')
+            st.image(img_b, caption=f"B · Page {pg}", use_container_width=True)
 
         st.markdown("#### Export")
         colx, coly = st.columns([1, 1])
