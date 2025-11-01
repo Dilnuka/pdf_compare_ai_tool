@@ -47,6 +47,7 @@ from pdf_compare.visual import (
     text_diff_rects,
     text_diff_stats,
 )  # type: ignore
+from utils.env import ensure_google_api_key  # type: ignore
 
 st.set_page_config(page_title="PDF Compare", page_icon="🧾", layout="wide")
 
@@ -184,7 +185,7 @@ def _compare_flow(use_pro: bool):
             help="Drag & drop your second PDF here or click to browse.",
         )
 
-    # Centered Compare button row
+    # Centered Compare and Summarize button row
     spacer_left, center_col, spacer_right = st.columns([1, 0.6, 1])
     with center_col:
         compare_btn = st.button(
@@ -193,6 +194,17 @@ def _compare_flow(use_pro: bool):
             use_container_width=True,
             key=("cmp_pro" if use_pro else "cmp_basic"),
         )
+        
+        # Add Summarize button only for basic mode
+        if not use_pro:
+            summarize_btn = st.button(
+                "🤖 AI Summarize",
+                type="secondary",
+                use_container_width=True,
+                key="summarize_basic",
+            )
+        else:
+            summarize_btn = False
 
     # compare_btn already defined above in the centered column
     if compare_btn:
@@ -223,6 +235,122 @@ def _compare_flow(use_pro: bool):
         st.download_button(label="Download HTML report", data=html, file_name=fname, mime="text/html")
         st.session_state.reports.insert(0, {"title": fname, "html": html})
         st.session_state.reports = st.session_state.reports[:10]
+    
+    # AI options for summarization (Basic mode only)
+    ai_pages = None
+    ai_model = "gemini-2.0-flash"
+    if not use_pro:
+        with st.expander("AI Options", expanded=False):
+            pages_choice = st.selectbox(
+                "AI pages used (per PDF)",
+                options=[5, 10, 20, 50, "All"],
+                index=2,
+                help="Limit how many pages from each PDF are sent to Gemini to avoid rate limits and reduce cost.",
+                key="ai_pages_choice",
+            )
+            ai_pages = None if pages_choice == "All" else int(pages_choice)
+            ai_model = st.selectbox(
+                "Model",
+                options=["gemini-2.0-flash", "gemini-2.0-flash-exp"],
+                index=0,
+                help="Use the stable flash model by default. The exp version may change or have different limits.",
+                key="ai_model_choice",
+            )
+
+    # Handle AI Summarize button (only for basic mode)
+    if summarize_btn:
+        if not file_a or not file_b:
+            st.warning("Please upload both PDFs.")
+            st.stop()
+        
+        # Check for API key (auto-load from .env/.env.local/.env.example if needed)
+        api_key = ensure_google_api_key()
+        if not api_key:
+            st.error("❌ Google API Key not found. Please set the GOOGLE_API_KEY environment variable.")
+            st.info("💡 You can get a free API key from https://makersuite.google.com/app/apikey")
+            st.stop()
+        
+        tmp_dir = Path(".tmp_uploads")
+        tmp_dir.mkdir(exist_ok=True)
+        path_a = tmp_dir / (file_a.name or "a.pdf")
+        path_b = tmp_dir / (file_b.name or "b.pdf")
+        
+        # Write files if not already written
+        if not path_a.exists():
+            path_a.write_bytes(file_a.read())
+        if not path_b.exists():
+            file_b.seek(0)  # Reset file pointer
+            path_b.write_bytes(file_b.read())
+        
+        with st.spinner("🤖 Generating AI summary using Gemini… This may take a moment."):
+            # Reload module to avoid stale signatures under Streamlit's runner
+            import importlib  # type: ignore
+            import pdf_compare_solution as pcs  # type: ignore
+            try:
+                importlib.reload(pcs)
+            except Exception:
+                pass
+            fn = getattr(pcs, "generate_ai_summary")
+            try:
+                import inspect  # type: ignore
+                params = inspect.signature(fn).parameters
+                if "model_name" in params:
+                    summary = fn(
+                        str(path_a),
+                        str(path_b),
+                        api_key,
+                        model_name=ai_model,
+                        page_limit=ai_pages,
+                    )
+                else:
+                    # Backward-compatible call if older function signature is loaded
+                    summary = fn(str(path_a), str(path_b), api_key)
+            except Exception as e:
+                summary = f"Error generating AI summary: {e}"
+        
+        st.success("✅ AI Summary generated successfully!")
+        
+        # Display the summary in an expandable section
+        with st.expander("📊 AI Comparison Summary", expanded=True):
+            if summary.startswith("Error generating AI summary"):
+                st.error(summary)
+                st.info(
+                    "Try reducing 'AI pages used' in AI Options, switching to the stable model, or waiting a minute and trying again."
+                )
+            else:
+                st.markdown(summary)
+        
+        # Download options in two columns
+        col_md, col_pdf = st.columns(2)
+        
+        with col_md:
+            st.download_button(
+                label="💾 Download as Markdown",
+                data=summary,
+                file_name=f"summary_{Path(file_a.name).stem}_vs_{Path(file_b.name).stem}.md",
+                mime="text/markdown",
+                use_container_width=True,
+            )
+        
+        with col_pdf:
+            # Generate PDF
+            try:
+                from utils.pdf_generator import markdown_to_pdf  # type: ignore
+                pdf_bytes = markdown_to_pdf(
+                    summary,
+                    title=f"Comparison: {Path(file_a.name).stem} vs {Path(file_b.name).stem}"
+                )
+                st.download_button(
+                    label="📄 Download as PDF",
+                    data=pdf_bytes,
+                    file_name=f"summary_{Path(file_a.name).stem}_vs_{Path(file_b.name).stem}.pdf",
+                    mime="application/pdf",
+                    use_container_width=True,
+                )
+            except ImportError:
+                st.warning("⚠️ PDF generation requires 'reportlab'. Install with: pip install reportlab")
+            except Exception as e:
+                st.error(f"❌ Error generating PDF: {e}")
 
 
 @st.cache_data(show_spinner=False)
