@@ -9,7 +9,27 @@ from __future__ import annotations
 
 import base64
 import io
+import os
 from pathlib import Path
+
+# Workaround for a known Streamlit x PyTorch watcher issue where torch.classes
+# trips the module watcher. Setting the file watcher type to 'poll' prevents
+# Streamlit from inspecting module __path__ objects that can trigger errors.
+os.environ.setdefault("STREAMLIT_WATCHER_TYPE", "poll")
+
+import sys
+import types
+
+# Guard against Streamlit watcher touching torch.classes which can raise
+# when accessed as a module. We pre-insert a harmless placeholder so
+# attribute access won't hit PyTorch's C++ proxy.
+if 'torch.classes' not in sys.modules:
+    dummy_mod = types.ModuleType('torch.classes')
+    class _DummyPath:
+        _path: list = []
+    dummy_mod.__path__ = _DummyPath()
+    sys.modules['torch.classes'] = dummy_mod
+
 import streamlit as st
 import fitz  # PyMuPDF
 
@@ -214,6 +234,46 @@ def _render_png_bytes(pdf_bytes: bytes, page_index: int, zoom: float = 1.8) -> b
         return pix.tobytes("png")
 
 
+def _render_zoom_controls(prefix: str = "") -> None:
+    """Render a horizontal zoom control bar (Reset, −, %, +).
+
+    The controls are laid out with equal visual spacing and operate on the
+    shared st.session_state.zoom_level so both panes stay in sync.
+    The prefix guarantees unique Streamlit widget keys for each pane.
+    """
+    # Layout: Reset | gap | − | gap | % | gap | +
+    c1, g1, c2, g2, c3, g3, c4 = st.columns([2, 0.3, 1, 0.3, 1.2, 0.3, 1])
+
+    with c1:
+        if st.button("Reset to 100%", key=f"zoom_reset_{prefix}", use_container_width=True, type="secondary"):
+            st.session_state.zoom_level = 1.0
+            st.rerun()
+
+    with c2:
+        if st.button("−", key=f"zoom_out_{prefix}", use_container_width=True, type="secondary"):
+            zoom_options = [0.5, 0.75, 1.0, 1.25, 1.5, 1.8, 2.0, 2.5, 3.0, 4.0]
+            current_idx = zoom_options.index(st.session_state.zoom_level) if st.session_state.zoom_level in zoom_options else 2
+            if current_idx > 0:
+                st.session_state.zoom_level = zoom_options[current_idx - 1]
+                st.rerun()
+
+    with c3:
+        zoom_pct = int(st.session_state.zoom_level * 100)
+        st.markdown(
+            f'<div class="zoom-display-box" style="margin-top: 4px;">{zoom_pct}%</div>',
+            unsafe_allow_html=True,
+        )
+
+    with c4:
+        # Use fullwidth plus (U+FF0B) for reliable rendering across fonts
+        if st.button("＋", key=f"zoom_in_{prefix}", use_container_width=True, type="secondary"):
+            zoom_options = [0.5, 0.75, 1.0, 1.25, 1.5, 1.8, 2.0, 2.5, 3.0, 4.0]
+            current_idx = zoom_options.index(st.session_state.zoom_level) if st.session_state.zoom_level in zoom_options else 2
+            if current_idx < len(zoom_options) - 1:
+                st.session_state.zoom_level = zoom_options[current_idx + 1]
+                st.rerun()
+
+
 def _side_by_side_flow():
     st.markdown("### Visual side‑by‑side comparison")
     mode = st.radio("Mode", ["Visual", "Compare Text"], horizontal=True, key="ss_mode")
@@ -279,7 +339,9 @@ def _side_by_side_flow():
             else:
                 st.caption(f"✅ Page {pg}: No differences detected")
         
-        z = st.select_slider("Zoom", options=[1.2, 1.5, 1.8, 2.0, 2.5, 3.0], value=1.8, key="zoom_visual")
+        # Initialize zoom state
+        if "zoom_level" not in st.session_state:
+            st.session_state.zoom_level = 1.0
         
         # Add legend for Compare Text mode
         if mode == "Compare Text":
@@ -288,14 +350,126 @@ def _side_by_side_flow():
         ca, cb = st.columns(2, gap="large")
         with st.spinner("Rendering page images…"):
             if mode == "Visual":
-                img_a = _render_png_bytes(bytes_a, pg - 1, z)
-                img_b = _render_png_bytes(bytes_b, pg - 1, z)
+                img_a = _render_png_bytes(bytes_a, pg - 1, st.session_state.zoom_level)
+                img_b = _render_png_bytes(bytes_b, pg - 1, st.session_state.zoom_level)
             else:
-                img_a, img_b = render_page_pair_png_highlight(bytes_a, bytes_b, pg - 1, zoom=z, opacity=0.18)
+                img_a, img_b = render_page_pair_png_highlight(bytes_a, bytes_b, pg - 1, zoom=st.session_state.zoom_level, opacity=0.18)
+        
+        # Convert images to base64 for HTML display with scrolling
+        import base64
+        img_a_b64 = base64.b64encode(img_a).decode()
+        img_b_b64 = base64.b64encode(img_b).decode()
+        
         with ca:
-            st.image(img_a, caption=f"A · Page {pg}", use_container_width=True)
+            st.markdown(f"**A · Page {pg}**")
+            st.markdown(
+                f'''<div class="pdf-scroll-container">
+                    <img src="data:image/png;base64,{img_a_b64}" style="display: block; max-width: none;">
+                </div>''',
+                unsafe_allow_html=True
+            )
         with cb:
-            st.image(img_b, caption=f"B · Page {pg}", use_container_width=True)
+            st.markdown(f"**B · Page {pg}**")
+            st.markdown(
+                f'''<div class="pdf-scroll-container">
+                    <img src="data:image/png;base64,{img_b_b64}" style="display: block; max-width: none;">
+                </div>''',
+                unsafe_allow_html=True
+            )
+        
+        # Styles for scroll containers and zoom controls
+        st.markdown(
+            """
+            <style>
+            /* Scrollable PDF container */
+            .pdf-scroll-container {
+                width: 100%;
+                height: 88vh; /* taller viewing area to reduce empty space */
+                overflow: auto;
+                border: 1px solid #e5e7eb;
+                border-radius: 8px;
+                background: #f9fafb;
+                padding: 12px; /* slightly tighter padding for more room */
+                scrollbar-gutter: stable both-edges; /* keep scrollbars beside content */
+                box-shadow: inset 0 1px 3px rgba(0,0,0,0.05);
+            }
+
+            /* Keep things usable on short screens */
+            @media (max-height: 800px) {
+                .pdf-scroll-container { height: 77vh; }
+            }
+            
+            /* Custom scrollbar styling */
+            .pdf-scroll-container::-webkit-scrollbar {
+                width: 12px;
+                height: 12px;
+            }
+            
+            .pdf-scroll-container::-webkit-scrollbar-track {
+                background: #f1f5f9;
+                border-radius: 6px;
+            }
+            
+            .pdf-scroll-container::-webkit-scrollbar-thumb {
+                background: #cbd5e1;
+                border-radius: 6px;
+                border: 2px solid #f1f5f9;
+            }
+            
+            .pdf-scroll-container::-webkit-scrollbar-thumb:hover {
+                background: #94a3b8;
+            }
+            
+            .pdf-scroll-container::-webkit-scrollbar-corner {
+                background: #f1f5f9;
+            }
+            
+            /* Streamlit button styling overrides for zoom controls */
+            div[data-testid="column"] button[kind="secondary"] {
+                border-radius: 8px !important;
+                border: 1.5px solid #d1d5db !important;
+                background: white !important;
+                color: #374151 !important;
+                font-size: 20px !important;
+                font-weight: 400 !important;
+                padding: 8px !important;
+                min-height: 38px !important;
+                box-shadow: 0 1px 3px rgba(0,0,0,0.08) !important;
+                transition: all 0.15s ease !important;
+            }
+            div[data-testid="column"] button[kind="secondary"]:hover {
+                background: #f9fafb !important;
+                border-color: #9ca3af !important;
+                box-shadow: 0 2px 4px rgba(0,0,0,0.12) !important;
+            }
+            div[data-testid="column"] button[kind="secondary"]:active {
+                transform: scale(0.97) !important;
+            }
+            .zoom-display-box {
+                background: white;
+                border: 1.5px solid #d1d5db;
+                border-radius: 8px;
+                padding: 8px 20px;
+                text-align: center;
+                font-size: 15px;
+                font-weight: 600;
+                color: #1f2937;
+                min-width: 80px;
+                box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+                margin: 0 auto;
+                display: inline-block;
+            }
+            </style>
+            """,
+            unsafe_allow_html=True
+        )
+        
+        # Central zoom bar, well centered below both panes
+        st.markdown("<div style='height: 4px;'></div>", unsafe_allow_html=True)
+        left_sp, center_controls, right_sp = st.columns([1, 2, 1])
+        with center_controls:
+            _render_zoom_controls(prefix="center")
+
 
         st.markdown("#### Export")
         colx, coly = st.columns([1, 1])
