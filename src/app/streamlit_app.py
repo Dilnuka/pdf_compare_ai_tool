@@ -20,7 +20,11 @@ if str(src_path) not in sys.path:
     sys.path.insert(0, str(src_path))
 
 from pdf_compare.baseline import compare_pdfs  # type: ignore
-from pdf_compare.visual import merge_side_by_side  # type: ignore
+from pdf_compare.visual import (
+    merge_side_by_side,
+    render_page_pair_png_highlight,
+    merge_side_by_side_with_text_highlight,
+)  # type: ignore
 
 st.set_page_config(page_title="PDF Compare", page_icon="🧾", layout="wide")
 
@@ -210,6 +214,7 @@ def _render_png_bytes(pdf_bytes: bytes, page_index: int, zoom: float = 1.8) -> b
 
 def _side_by_side_flow():
     st.markdown("### Visual side‑by‑side comparison")
+    mode = st.radio("Mode", ["Visual", "Compare Text"], horizontal=True, key="ss_mode")
     c1, c2 = st.columns(2, gap="large")
     with c1:
         file_a = st.file_uploader("Upload PDF A", type=["pdf"], key="pdf_a_visual")
@@ -229,8 +234,11 @@ def _side_by_side_flow():
         z = st.select_slider("Zoom", options=[1.2, 1.5, 1.8, 2.0, 2.5, 3.0], value=1.8, key="zoom_visual")
         ca, cb = st.columns(2, gap="large")
         with st.spinner("Rendering page images…"):
-            img_a = _render_png_bytes(bytes_a, pg - 1, z)
-            img_b = _render_png_bytes(bytes_b, pg - 1, z)
+            if mode == "Visual":
+                img_a = _render_png_bytes(bytes_a, pg - 1, z)
+                img_b = _render_png_bytes(bytes_b, pg - 1, z)
+            else:
+                img_a, img_b = render_page_pair_png_highlight(bytes_a, bytes_b, pg - 1, zoom=z)
         with ca:
             st.image(img_a, caption=f"A · Page {pg}", width='stretch')
         with cb:
@@ -239,17 +247,31 @@ def _side_by_side_flow():
         st.markdown("#### Export")
         colx, coly = st.columns([1, 1])
         with colx:
-            if st.button("Merge all pages side‑by‑side (download)", type="primary", key="merge_visual"):
-                with st.spinner("Merging PDFs…"):
-                    merged = merge_side_by_side(bytes_a, bytes_b)
-                st.download_button(
-                    label="Download merged PDF",
-                    data=merged,
-                    file_name=f"merged_{Path(file_a.name).stem}_vs_{Path(file_b.name).stem}.pdf",
-                    mime="application/pdf",
-                )
+            if mode == "Visual":
+                if st.button("Merge all pages side‑by‑side (download)", type="primary", key="merge_visual"):
+                    with st.spinner("Merging PDFs…"):
+                        merged = merge_side_by_side(bytes_a, bytes_b)
+                    st.download_button(
+                        label="Download merged PDF",
+                        data=merged,
+                        file_name=f"merged_{Path(file_a.name).stem}_vs_{Path(file_b.name).stem}.pdf",
+                        mime="application/pdf",
+                    )
+            else:
+                if st.button("Merge with text highlights (download)", type="primary", key="merge_visual_diff"):
+                    with st.spinner("Merging and highlighting differences…"):
+                        merged = merge_side_by_side_with_text_highlight(bytes_a, bytes_b)
+                    st.download_button(
+                        label="Download highlighted PDF",
+                        data=merged,
+                        file_name=f"merged_diff_{Path(file_a.name).stem}_vs_{Path(file_b.name).stem}.pdf",
+                        mime="application/pdf",
+                    )
         with coly:
-            st.caption("Creates a single PDF where each page shows A on the left and B on the right.")
+            if mode == "Visual":
+                st.caption("Creates a single PDF where each page shows A on the left and B on the right.")
+            else:
+                st.caption("Same merge, but with translucent rectangles highlighting changed words.")
 
 
 # --- Page routing ---
