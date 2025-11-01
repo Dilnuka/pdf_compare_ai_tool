@@ -126,38 +126,80 @@ def markdown_to_pdf(markdown_text: str, title: str = "PDF Comparison Summary") -
     elements.append(Paragraph(f"Generated on {date_str}", styles['Normal']))
     elements.append(Spacer(1, 0.3*inch))
     
+    # Cell style for table content (allows wrapping)
+    cell_style = ParagraphStyle(
+        'TableCell',
+        parent=styles['BodyText'],
+        fontSize=9,
+        textColor=HexColor('#1f2937'),
+        fontName='Helvetica',
+        leading=11,
+        alignment=TA_LEFT,
+    )
+    
+    cell_header_style = ParagraphStyle(
+        'TableHeader',
+        parent=styles['BodyText'],
+        fontSize=10,
+        textColor=colors.whitesmoke,
+        fontName='Helvetica-Bold',
+        leading=12,
+        alignment=TA_LEFT,
+    )
+    
     # Parse markdown and convert to PDF elements
     lines = markdown_text.split('\n')
     current_table_data = []
     in_table = False
+    table_row_count = 0
     
     for line in lines:
         line = line.strip()
         
         if not line:
             if in_table and current_table_data:
-                # Render the table
-                table = Table(current_table_data, repeatRows=1)
+                # Determine column widths based on number of columns
+                num_cols = len(current_table_data[0]) if current_table_data else 0
+                
+                # Calculate available width
+                available_width = doc.width
+                
+                # Dynamic column widths based on table structure
+                if num_cols == 2:
+                    col_widths = [available_width * 0.35, available_width * 0.65]
+                elif num_cols == 3:
+                    col_widths = [available_width * 0.30, available_width * 0.35, available_width * 0.35]
+                elif num_cols == 4:
+                    col_widths = [available_width * 0.28, available_width * 0.24, available_width * 0.24, available_width * 0.24]
+                else:
+                    # Equal widths for other cases
+                    col_widths = [available_width / num_cols] * num_cols
+                
+                # Render the table with wrapped paragraphs
+                table = Table(current_table_data, colWidths=col_widths, repeatRows=1)
                 table.setStyle(TableStyle([
                     ('BACKGROUND', (0, 0), (-1, 0), HexColor('#3b82f6')),
                     ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
                     ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
                     ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
                     ('FONTSIZE', (0, 0), (-1, 0), 10),
-                    ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-                    ('TOPPADDING', (0, 0), (-1, 0), 12),
+                    ('BOTTOMPADDING', (0, 0), (-1, 0), 8),
+                    ('TOPPADDING', (0, 0), (-1, 0), 8),
+                    ('LEFTPADDING', (0, 0), (-1, -1), 6),
+                    ('RIGHTPADDING', (0, 0), (-1, -1), 6),
                     ('BACKGROUND', (0, 1), (-1, -1), colors.white),
                     ('TEXTCOLOR', (0, 1), (-1, -1), colors.black),
                     ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
                     ('FONTSIZE', (0, 1), (-1, -1), 9),
                     ('GRID', (0, 0), (-1, -1), 1, HexColor('#e5e7eb')),
-                    ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                    ('VALIGN', (0, 0), (-1, -1), 'TOP'),
                     ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, HexColor('#f9fafb')]),
                 ]))
                 elements.append(table)
                 elements.append(Spacer(1, 0.2*inch))
                 current_table_data = []
                 in_table = False
+                table_row_count = 0
             else:
                 elements.append(Spacer(1, 0.1*inch))
             continue
@@ -180,7 +222,21 @@ def markdown_to_pdf(markdown_text: str, title: str = "PDF Comparison Summary") -
             cells = [cell.strip() for cell in line.split('|')]
             cells = [c for c in cells if c]  # Remove empty cells
             if cells:
-                current_table_data.append(cells)
+                # Wrap each cell in a Paragraph for proper text wrapping
+                wrapped_cells = []
+                for cell in cells:
+                    # Normalize inline formatting for cells
+                    # - Bold/italic markdown to HTML tags
+                    # - Convert <br> to <br/> for ReportLab Paragraph
+                    cell_txt = re.sub(r'\*\*([^*]+)\*\*', r'<b>\1</b>', cell)
+                    cell_txt = re.sub(r'\*([^*]+)\*', r'<i>\1</i>', cell_txt)
+                    cell_txt = cell_txt.replace('<br>', '<br/>')
+                    cell_txt = cell_txt.replace('✅', '')
+                    # Use header style for first row, cell style for others
+                    style = cell_header_style if table_row_count == 0 else cell_style
+                    wrapped_cells.append(Paragraph(cell_txt, style))
+                current_table_data.append(wrapped_cells)
+                table_row_count += 1
         
         # Bullets (support '-', '*', and '•')
         elif line.startswith('- ') or line.startswith('* ') or line.startswith('• '):

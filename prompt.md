@@ -22,6 +22,8 @@ STRICT ACCURACY RULES
 - Never add features or data not explicitly shown
 - Convert "-" or blank values to: None
 - Ensure clean, aligned tables — no formatting glitches
+ - Do NOT split Product A and Product B into separate tables; always use a single table with columns “Product A” and “Product B” where applicable
+ - For long content inside table cells, keep it in the same cell; use concise phrases and insert line breaks (e.g., <br>) between items if needed (do not create extra tables)
 
 OUTPUT FORMAT
 (return EXACTLY in this structure)
@@ -68,7 +70,7 @@ OUTPUT FORMAT
 | Weight |  |  |  |  |
 
 ## Packaging — Materials
-| Material Category | Product Only | Primary Pack | Secondary Pack |
+| Material Category | Primary Pack | Secondary | Transit Pack |
 |---|---|---|---|
 | Card Use |  |  |  |
 | Card Weight |  |  |  |
