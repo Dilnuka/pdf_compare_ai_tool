@@ -182,9 +182,9 @@ def markdown_to_pdf(markdown_text: str, title: str = "PDF Comparison Summary") -
             if cells:
                 current_table_data.append(cells)
         
-        # Bullets
-        elif line.startswith('- ') or line.startswith('* '):
-            text = line[2:]
+        # Bullets (support '-', '*', and '•')
+        elif line.startswith('- ') or line.startswith('* ') or line.startswith('• '):
+            text = line[2:] if not line.startswith('• ') else line[1:].strip()
             # Properly handle bold markdown
             text = re.sub(r'\*\*([^*]+)\*\*', r'<b>\1</b>', text)
             text = text.replace('✅', '')

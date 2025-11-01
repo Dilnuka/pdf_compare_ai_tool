@@ -128,10 +128,27 @@ st.sidebar.markdown("#### Recent reports")
 if not st.session_state.reports:
     st.sidebar.caption("No reports yet.")
 else:
+    # Per-report actions (download + delete)
     for i, rep in enumerate(st.session_state.reports[:5]):
-        st.sidebar.download_button(
-            key=f"sdl_{i}", label=rep["title"], data=rep["html"], file_name=rep["title"], mime="text/html"
-        )
+        cdl, cdel = st.sidebar.columns([0.78, 0.22])
+        with cdl:
+            st.download_button(
+                key=f"sdl_{i}", label=rep["title"], data=rep["html"], file_name=rep["title"], mime="text/html",
+                use_container_width=True,
+            )
+        with cdel:
+            if st.button("🗑️", key=f"del_rep_{i}", help="Delete this report", use_container_width=True):
+                try:
+                    del st.session_state.reports[i]
+                except Exception:
+                    pass
+                st.rerun()
+
+    # Bulk action
+    st.sidebar.markdown("")
+    if st.sidebar.button("Clear all reports", type="secondary"):
+        st.session_state.reports = []
+        st.rerun()
 
 
 def _render_results(report_struct):
@@ -236,26 +253,7 @@ def _compare_flow(use_pro: bool):
         st.session_state.reports.insert(0, {"title": fname, "html": html})
         st.session_state.reports = st.session_state.reports[:10]
     
-    # AI options for summarization (Basic mode only)
-    ai_pages = None
-    ai_model = "gemini-2.0-flash"
-    if not use_pro:
-        with st.expander("AI Options", expanded=False):
-            pages_choice = st.selectbox(
-                "AI pages used (per PDF)",
-                options=[5, 10, 20, 50, "All"],
-                index=2,
-                help="Limit how many pages from each PDF are sent to Gemini to avoid rate limits and reduce cost.",
-                key="ai_pages_choice",
-            )
-            ai_pages = None if pages_choice == "All" else int(pages_choice)
-            ai_model = st.selectbox(
-                "Model",
-                options=["gemini-2.0-flash", "gemini-2.0-flash-exp"],
-                index=0,
-                help="Use the stable flash model by default. The exp version may change or have different limits.",
-                key="ai_model_choice",
-            )
+    # (Removed) AI pages options: always process full documents now
 
     # Handle AI Summarize button (only for basic mode)
     if summarize_btn:
@@ -294,14 +292,9 @@ def _compare_flow(use_pro: bool):
             try:
                 import inspect  # type: ignore
                 params = inspect.signature(fn).parameters
-                if "model_name" in params:
-                    summary = fn(
-                        str(path_a),
-                        str(path_b),
-                        api_key,
-                        model_name=ai_model,
-                        page_limit=ai_pages,
-                    )
+                if "page_limit" in params:
+                    # Do not pass page_limit (use default = no limit)
+                    summary = fn(str(path_a), str(path_b), api_key)
                 else:
                     # Backward-compatible call if older function signature is loaded
                     summary = fn(str(path_a), str(path_b), api_key)
@@ -309,48 +302,46 @@ def _compare_flow(use_pro: bool):
                 summary = f"Error generating AI summary: {e}"
         
         st.success("✅ AI Summary generated successfully!")
-        
-        # Display the summary in an expandable section
-        with st.expander("📊 AI Comparison Summary", expanded=True):
-            if summary.startswith("Error generating AI summary"):
-                st.error(summary)
-                st.info(
-                    "Try reducing 'AI pages used' in AI Options, switching to the stable model, or waiting a minute and trying again."
-                )
-            else:
-                st.markdown(summary)
-        
-        # Download options in two columns
-        col_md, col_pdf = st.columns(2)
-        
-        with col_md:
-            st.download_button(
-                label="💾 Download as Markdown",
-                data=summary,
-                file_name=f"summary_{Path(file_a.name).stem}_vs_{Path(file_b.name).stem}.md",
-                mime="text/markdown",
-                use_container_width=True,
+
+        # Prepare and persist results so download doesn't clear the UI
+        try:
+            from utils.pdf_generator import markdown_to_pdf  # type: ignore
+            pdf_bytes = markdown_to_pdf(
+                summary,
+                title=f"Comparison: {Path(file_a.name).stem} vs {Path(file_b.name).stem}"
             )
-        
-        with col_pdf:
-            # Generate PDF
-            try:
-                from utils.pdf_generator import markdown_to_pdf  # type: ignore
-                pdf_bytes = markdown_to_pdf(
-                    summary,
-                    title=f"Comparison: {Path(file_a.name).stem} vs {Path(file_b.name).stem}"
-                )
-                st.download_button(
-                    label="📄 Download as PDF",
-                    data=pdf_bytes,
-                    file_name=f"summary_{Path(file_a.name).stem}_vs_{Path(file_b.name).stem}.pdf",
-                    mime="application/pdf",
-                    use_container_width=True,
-                )
-            except ImportError:
-                st.warning("⚠️ PDF generation requires 'reportlab'. Install with: pip install reportlab")
-            except Exception as e:
-                st.error(f"❌ Error generating PDF: {e}")
+        except ImportError:
+            pdf_bytes = None
+            st.warning("⚠️ PDF generation requires 'reportlab'. Install with: pip install reportlab")
+        except Exception as e:
+            pdf_bytes = None
+            st.error(f"❌ Error generating PDF: {e}")
+
+        st.session_state.ai_summary = {
+            "text": summary,
+            "pdf": pdf_bytes,
+            "fname": f"summary_{Path(file_a.name).stem}_vs_{Path(file_b.name).stem}.pdf",
+        }
+
+    # Persistent render of last AI summary (if available)
+    if not use_pro and st.session_state.get("ai_summary"):
+        data = st.session_state.ai_summary
+        with st.expander("📊 AI Comparison Summary", expanded=True):
+            if isinstance(data.get("text"), str) and data["text"].startswith("Error generating AI summary"):
+                st.error(data["text"])
+                st.info("Try reducing 'AI pages used' in AI Options or trying again later.")
+            else:
+                st.markdown(data.get("text", ""))
+
+        if data.get("pdf"):
+            st.download_button(
+                label="📄 Download as PDF",
+                data=data["pdf"],
+                file_name=data.get("fname", "summary.pdf"),
+                mime="application/pdf",
+                use_container_width=True,
+                key="dl_summary_pdf_persist",
+            )
 
 
 @st.cache_data(show_spinner=False)
