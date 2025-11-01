@@ -45,8 +45,8 @@ size_preset = st.sidebar.selectbox(
 _HEIGHT_MAP = {"Compact": "28vh", "Comfortable": "40vh", "Spacious": "60vh"}
 dz_height = _HEIGHT_MAP.get(size_preset, "40vh")
 
-# Navigation after size selector
-page = st.sidebar.radio("Navigation", ["Basic", "Pro", "Side‑by‑Side"])
+# Navigation after size selector (two modes only)
+page = st.sidebar.radio("Navigation", ["Basic", "Pro (Side‑by‑Side)"])
 
 # Inject CSS with the chosen height (placed after sidebar to override defaults)
 st.markdown(
@@ -279,9 +279,6 @@ st.title(f"AI‑Driven PDF Comparison · {page}")
 if page == "Basic":
     st.caption("Quick diffs for text, tables, and images using pHash")
     _compare_flow(use_pro=False)
-elif page == "Pro":
-    st.caption("Semantic text diffs (MiniLM) and optional summaries")
-    _compare_flow(use_pro=True)
 else:
-    st.caption("Render pages as images or export a merged side‑by‑side PDF")
+    st.caption("Visual page review, text‑diff highlights, and merged side‑by‑side export")
     _side_by_side_flow()
