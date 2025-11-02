@@ -1,9 +1,4 @@
-"""
-Streamlit web app (sidebar navigation)
-- Left sidebar like ChatGPT: switch between Basic and Pro pages.
-- Each page has its own uploaders and Compare action.
-- Recent reports are stored in session_state and shown in the sidebar.
-"""
+"""Streamlit web app for PDF comparison."""
 
 from __future__ import annotations
 
@@ -12,17 +7,13 @@ import io
 import os
 from pathlib import Path
 
-# Workaround for a known Streamlit x PyTorch watcher issue where torch.classes
-# trips the module watcher. Setting the file watcher type to 'poll' prevents
-# Streamlit from inspecting module __path__ objects that can trigger errors.
+# Fix for Streamlit+PyTorch watcher conflict
 os.environ.setdefault("STREAMLIT_WATCHER_TYPE", "poll")
 
 import sys
 import types
 
-# Guard against Streamlit watcher touching torch.classes which can raise
-# when accessed as a module. We pre-insert a harmless placeholder so
-# attribute access won't hit PyTorch's C++ proxy.
+# Prevent torch.classes module errors
 if 'torch.classes' not in sys.modules:
     dummy_mod = types.ModuleType('torch.classes')
     class _DummyPath:
@@ -51,27 +42,24 @@ from utils.env import ensure_google_api_key  # type: ignore
 
 st.set_page_config(page_title="PDF Compare", page_icon="🧾", layout="wide")
 
-# --- Session state ---
+# Session state
 if "reports" not in st.session_state:
-    st.session_state.reports = []  # list of {title, html}
+    st.session_state.reports = []
 
-# --- Sidebar (navigation + reports) ---
+# Sidebar
 st.sidebar.title("🧾 PDF Compare")
 
-# Size preset for the dropzones so the first screen fits nicely
 size_preset = st.sidebar.selectbox(
     "Upload area size",
     options=["Compact", "Comfortable", "Spacious"],
-    index=1,
-    help="Adjust the height of the drag-and-drop boxes to your screen."
+    index=1
 )
 _HEIGHT_MAP = {"Compact": "28vh", "Comfortable": "40vh", "Spacious": "60vh"}
 dz_height = _HEIGHT_MAP.get(size_preset, "40vh")
 
-# Navigation after size selector (two modes only)
-page = st.sidebar.radio("Navigation", ["Basic", "Pro (Side‑by‑Side)"])
+page = st.sidebar.radio("Navigation", ["Basic", "Side‑by‑Side"])
 
-# Inject CSS with the chosen height (placed after sidebar to override defaults)
+# Custom CSS for upload dropzones
 st.markdown(
         f"""
         <style>

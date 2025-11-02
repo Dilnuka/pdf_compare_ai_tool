@@ -1,7 +1,10 @@
 """
-Baseline PDF comparison with optional AI summarization (Gemini 2.0 Flash).
-- Text, table, image comparisons using utils.
-- AI summary generator that reads prompt.md (if present) or uses a built-in enterprise prompt.
+PDF Comparison Tool
+
+Compares two PDF files and generates comparison reports.
+Supports text, table, and image diff analysis with optional AI summaries.
+
+Author: Dilnuka
 """
 from __future__ import annotations
 
@@ -18,13 +21,12 @@ from utils.compare_table import compare_tables
 from utils.compare_image import compare_images
 from utils.report import render_html_report
 
-
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
 
 def compare_pdfs(pdf_a: str, pdf_b: str) -> Dict[str, Any]:
-    """Run baseline comparison across text, tables, and images."""
+    """Compare two PDFs and return detailed differences."""
     logger.info("Extracting from A: %s", pdf_a)
     texts_a = extract_text_pages(pdf_a)
     tables_a = extract_tables(pdf_a)
@@ -35,6 +37,7 @@ def compare_pdfs(pdf_a: str, pdf_b: str) -> Dict[str, Any]:
     tables_b = extract_tables(pdf_b)
     images_b = extract_images(pdf_b)
 
+    # Compare all content types
     logger.info("Comparing text")
     text_diffs = compare_texts(texts_a, texts_b)
 
@@ -62,23 +65,14 @@ def generate_ai_summary(
     retries: int = 3,
     backoff_base: float = 2.0,
 ) -> str:
-    """
-    Generate AI-powered comparison summary using Gemini.
-
-    Args:
-        pdf_a_path: Path to first PDF
-        pdf_b_path: Path to second PDF
-        api_key: Google API key (if None, will try to get from env/.env)
-    Returns:
-        Formatted comparison summary from Gemini
-    """
+    """Generate AI summary using Gemini API."""
     try:
         import google.generativeai as genai
     except ImportError:
-        logger.error("google-generativeai package not installed. Install with: pip install google-generativeai")
-        return "Error: google-generativeai package not installed."
+        logger.error("Missing google-generativeai package")
+        return "Error: google-generativeai not installed."
 
-    # Resolve API key
+    # Get API key from env
     if api_key is None:
         api_key = os.getenv("GOOGLE_API_KEY")
         if not api_key:
@@ -101,39 +95,39 @@ def generate_ai_summary(
                 pass
 
     if not api_key:
-        return "Error: Google API key not found. Please set GOOGLE_API_KEY environment variable."
+        return "Error: GOOGLE_API_KEY not found in environment."
 
     try:
-        # Configure Gemini
         genai.configure(api_key=api_key)
 
-        # Extract and (optionally) limit text
-        logger.info("Extracting text from PDFs for AI summarization...")
+        logger.info("Extracting text for AI analysis...")
         texts_a_all = extract_text_pages(pdf_a_path)
         texts_b_all = extract_text_pages(pdf_b_path)
+        
+        # Apply page limit if specified
         texts_a = texts_a_all[:page_limit] if page_limit else texts_a_all
         texts_b = texts_b_all[:page_limit] if page_limit else texts_b_all
 
         pdf_a_text = "\n\n".join([f"Page {i+1}:\n{text}" for i, text in enumerate(texts_a)])
         pdf_b_text = "\n\n".join([f"Page {i+1}:\n{text}" for i, text in enumerate(texts_b)])
 
+        # Truncate to avoid hitting API limits
         if max_chars_per_doc and isinstance(max_chars_per_doc, int):
             if len(pdf_a_text) > max_chars_per_doc:
                 pdf_a_text = pdf_a_text[:max_chars_per_doc]
             if len(pdf_b_text) > max_chars_per_doc:
                 pdf_b_text = pdf_b_text[:max_chars_per_doc]
 
-        # Load external prompt if available
+        # Load prompt template
         prompt_template: Optional[str] = None
         try:
             prompt_path = Path.cwd() / "prompt.md"
             if prompt_path.exists():
                 prompt_template = prompt_path.read_text(encoding="utf-8")
         except Exception:
-            prompt_template = None
+            pass
 
         if not prompt_template:
-            # Built-in enterprise-grade prompt (kept in sync with prompt.md structure)
             prompt_template = """
 You are a Technical Product Analyst. Analyze and compare two product specification PDFs and produce an enterprise-grade, structured engineering comparison suitable for business stakeholders and interview panel review.
 
@@ -159,6 +153,8 @@ STRICT ACCURACY RULES
 - Never add features or data not explicitly shown
 - Convert "-" or blank values to: None
 - Ensure clean, aligned tables — no formatting glitches
+- Do NOT split Product A and Product B into separate tables; always use a single table with columns "Product A" and "Product B" where applicable
+- For long content inside table cells, keep it in the same cell; use concise phrases and insert line breaks (e.g., <br>) between items if needed (do not create extra tables)
 
 OUTPUT FORMAT
 (return EXACTLY in this structure)
@@ -205,7 +201,7 @@ OUTPUT FORMAT
 | Weight |  |  |  |  |
 
 ## Packaging — Materials
-| Material Category | Product Only | Primary Pack | Secondary Pack |
+| Material Category | Primary Pack | Secondary | Transit Pack |
 |---|---|---|---|
 | Card Use |  |  |  |
 | Card Weight |  |  |  |
@@ -244,53 +240,101 @@ Return ONLY the formatted comparison — no explanation, no extra text.
         except Exception:
             full_prompt = prompt_template.replace("{pdf_a_text}", pdf_a_text).replace("{pdf_b_text}", pdf_b_text)
 
-        logger.info("Generating AI summary using %s...", model_name)
+        # Call Gemini with retry logic
         model = genai.GenerativeModel(model_name)
-
-        last_err: Optional[Exception] = None
-        for attempt in range(1, max(1, retries) + 1):
+        last_err = None
+        
+        for attempt in range(1, retries + 1):
             try:
                 response = model.generate_content(full_prompt)
-                logger.info("AI summary generated successfully")
+                logger.info("Summary generated")
                 return response.text
             except Exception as e:
-                msg = str(e)
                 last_err = e
+                msg = str(e)
+                
+                # Check if it's a rate limit error
                 if "429" in msg or "Resource exhausted" in msg or "quota" in msg.lower():
-                    wait_s = (backoff_base ** (attempt - 1))
-                    logger.warning(
-                        "Gemini API rate limit hit (attempt %s/%s). Backing off for %.1fs...",
-                        attempt,
-                        retries,
-                        wait_s,
-                    )
-                    time.sleep(wait_s)
-                    continue
+                    wait_time = backoff_base ** (attempt - 1)
+                    logger.warning(f"Rate limited. Retrying in {wait_time}s... (attempt {attempt}/{retries})")
+                    time.sleep(wait_time)
                 else:
-                    logger.error("Non-retryable error generating AI summary: %s", e)
-                    return f"Error generating AI summary: {msg}"
+                    logger.error(f"API error: {e}")
+                    return f"Error: {msg}"
 
-        logger.error("Retries exhausted generating AI summary: %s", last_err)
-        return (
-            "Error generating AI summary: 429 Resource exhausted or rate-limited. "
-            "Tips: Try again in a minute or try again with smaller documents."
-        )
+        return f"Error: Rate limit exceeded. Try again later. ({last_err})"
 
     except Exception as e:
-        logger.error(f"Error generating AI summary: {e}")
-        return f"Error generating AI summary: {str(e)}"
+        logger.error(f"AI summary failed: {e}")
+        return f"Error: {str(e)}"
+
+
+def merge_side_by_side_comparison(
+    pdf_a: str,
+    pdf_b: str,
+    out: Optional[str] = None,
+    highlight: bool = False,
+    max_pages: Optional[int] = None,
+) -> str:
+    """Merge two PDFs side-by-side for visual comparison."""
+    try:
+        from pdf_compare.visual import (
+            merge_side_by_side,
+            merge_side_by_side_with_text_highlight,
+        )
+    except ImportError:
+        logger.error("pdf_compare.visual module missing")
+        raise ImportError("Visual comparison module not found.")
+    
+    out_path = out or ("side_by_side_highlighted.pdf" if highlight else "side_by_side.pdf")
+    logger.info(f"Creating side-by-side PDF (highlight={highlight})")
+    if highlight:
+        merge_side_by_side_with_text_highlight(pdf_a, pdf_b, out_path=out_path, max_pages=max_pages)
+    else:
+        merge_side_by_side(pdf_a, pdf_b, out_path=out_path, max_pages=max_pages)
+    
+    logger.info(f"Created: {out_path}")
+    return out_path
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Baseline PDF compare tool")
+    """CLI for PDF comparison tool."""
+    parser = argparse.ArgumentParser(description="PDF Comparison Tool")
     parser.add_argument("pdf_a", help="Path to first PDF")
     parser.add_argument("pdf_b", help="Path to second PDF")
-    parser.add_argument("--out", dest="out", default="report.html", help="Output HTML path")
+    parser.add_argument("--out", help="Output file path")
+    
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument("--ai-summary", action="store_true", help="Generate AI summary")
+    mode_group.add_argument("--side-by-side", action="store_true", help="Side-by-side visual comparison")
+    
+    parser.add_argument("--highlight", action="store_true", help="Highlight differences")
+    parser.add_argument("--max-pages", type=int, help="Limit pages")
+    
     args = parser.parse_args()
-
-    report_struct = compare_pdfs(args.pdf_a, args.pdf_b)
-    render_html_report(report_struct, args.out)
-    logger.info("Report written to %s", args.out)
+    
+    if args.ai_summary:
+        summary = generate_ai_summary(args.pdf_a, args.pdf_b)
+        if args.out:
+            Path(args.out).write_text(summary, encoding="utf-8")
+            logger.info(f"Saved to {args.out}")
+        else:
+            print(summary)
+    
+    elif args.side_by_side:
+        out_path = merge_side_by_side_comparison(
+            args.pdf_a, args.pdf_b,
+            out=args.out,
+            highlight=args.highlight,
+            max_pages=args.max_pages
+        )
+        logger.info(f"Created {out_path}")
+    
+    else:
+        report_struct = compare_pdfs(args.pdf_a, args.pdf_b)
+        out_path = args.out or "report.html"
+        render_html_report(report_struct, out_path)
+        logger.info(f"Report saved to {out_path}")
 
 
 if __name__ == "__main__":
