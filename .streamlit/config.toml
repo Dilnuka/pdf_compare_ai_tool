@@ -1,0 +1,3 @@
+[server]
+# Avoid watchdog's deep module inspection that trips on torch.classes
+fileWatcherType = "poll"
