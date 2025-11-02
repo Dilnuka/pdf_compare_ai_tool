@@ -1,0 +1,17 @@
+README.md
+pyproject.toml
+src/pdf_compare/__init__.py
+src/pdf_compare/baseline.py
+src/pdf_compare/pro.py
+src/pdf_compare_ai_tool.egg-info/PKG-INFO
+src/pdf_compare_ai_tool.egg-info/SOURCES.txt
+src/pdf_compare_ai_tool.egg-info/dependency_links.txt
+src/pdf_compare_ai_tool.egg-info/entry_points.txt
+src/pdf_compare_ai_tool.egg-info/top_level.txt
+src/utils/__init__.py
+src/utils/compare_image.py
+src/utils/compare_table.py
+src/utils/compare_text.py
+src/utils/extractor.py
+src/utils/report.py
+tests/test_core.py

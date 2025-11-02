@@ -1,0 +1,3 @@
+[console_scripts]
+pdf-compare-baseline = pdf_compare.baseline:main
+pdf-compare-pro = pdf_compare.pro:main

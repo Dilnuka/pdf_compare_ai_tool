@@ -1,0 +1,21 @@
+venv/
+.venv/
+__pycache__/
+**/__pycache__/
+.vscode/
+.cache/
+.pytest_cache/
+.tmp_uploads/
+.cache_embeddings/
+*.pyc
+*.pyo
+*.pyd
+*.log
+.DS_Store
+.env
+.coverage
+.ipynb_checkpoints/
+
+# Generated HTML reports and temp outputs
+out_*.html
+report*.html

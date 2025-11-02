@@ -1,0 +1,358 @@
+Metadata-Version: 2.4
+Name: pdf-compare-ai-tool
+Version: 0.1.0
+Summary: AI-driven PDF comparison (baseline & pro)
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+
+# pdf_compare_ai_tool
+PDF comparison ai tool with python with libraries 
+0) Project scaffold & environment (run in terminal)
+# create project folder
+mkdir pdf-compare-project
+cd pdf-compare-project
+
+# create venv and activate
+python -m venv venv
+# Windows
+venv\Scripts\activate
+# mac/linux
+# source venv/bin/activate
+
+# upgrade pip
+pip install --upgrade pip
+
+# install core libs
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+pip install sentence-transformers transformers pillow imagehash pdfplumber PyMuPDF pandas numpy jinja2 pytesseract streamlit onnxruntime
+
+# optional dev/test tools
+pip install pytest black isort pre-commit
+
+
+Create a requirements file:
+
+pip freeze > requirements.txt
+
+
+Initialize git:
+
+git init
+code .   # opens VS Code
+
+1) Create folder/file structure
+
+In VS Code create:
+
+pdf-compare-project/
+├── src/
+│   ├── pdf_compare_solution.py        # baseline (normal version)
+│   ├── pdf_compare_pro.py             # pro version
+│   ├── utils/
+│   │   ├── extractor.py
+│   │   ├── compare_text.py
+│   │   ├── compare_table.py
+│   │   ├── compare_image.py
+│   │   └── report.py
+│   └── app/
+│       └── streamlit_app.py
+├── tests/
+│   └── test_core.py
+├── assets/
+│   └── sample_P001.pdf
+│   └── sample_P002.pdf
+├── README.md
+├── requirements.txt
+└── .gitignore
+
+
+Create .gitignore and add venv/, __pycache__/, .vscode/, .cache/, *.pyc.
+
+2) Baseline file — src/pdf_compare/baseline.py
+
+Open src/pdf_compare_solution.py and paste this top comment (Copilot uses comments/docstrings as prompts):
+
+"""
+Copilot: Implement a baseline PDF comparison script.
+Requirements:
+- Extract text (PyMuPDF) from two PDFs.
+- Extract tables (pdfplumber) and convert to pandas DataFrame.
+- Extract images (PyMuPDF) and save them as PNG in /tmp or memory.
+- Compare text using difflib and produce a short unified_diff snippet per page.
+- Compare tables by page and produce cell-level differences (sample up to 30).
+- Compare images using imagehash phash and output hamming distance.
+- Render an HTML report using Jinja2 that includes: file names, text diffs, table diffs, image diffs (base64 thumbnails).
+- Provide a main() CLI that accepts two pdf file paths and an optional output HTML path.
+- Add helpful docstrings, logging, and safe error handling.
+"""
+
+
+Then wait for Copilot to generate code. If it suggests partial content, you can accept completions repeatedly until file is complete. If Copilot misses something, add more comments in the file describing the missing piece (e.g., “Copilot: add function extract_text_pages(pdf_path)”).
+
+If you want a single-shot prompt instead of iterative completions, replace the file contents with the long docstring below and run Copilot to complete:
+
+'''Copilot: Create a complete baseline python script that:
+- uses fitz (PyMuPDF) to extract page text
+- uses pdfplumber to extract tables per page into pandas DataFrames
+- uses fitz to extract images and compute imagehash.phash
+- compares text page-by-page with difflib.unified_diff (limit output lines)
+- compares tables using pandas and returns cell diffs (sample)
+- compares images by phash Hamming distance and flag > threshold
+- creates an HTML report via Jinja2 with embedded base64 thumbnails for images
+- implements a CLI: python pdf_compare_solution.py <pdfA> <pdfB> [out.html]
+- includes helpful prints and a README comment at top
+'''
+
+3) Utility modules — src/utils/*
+
+Create the five utility files and paste one prompt into each to make Copilot generate functions. (Do one file at a time.)
+
+src/utils/extractor.py
+
+Paste:
+
+"""
+Copilot: Implement PDF extraction utilities:
+- function extract_text_pages(pdf_path) -> list of (page_number, text)
+- function extract_tables(pdf_path) -> list of (page_number, dataframe)
+- function extract_images(pdf_path) -> list of objects with (page, name, bytes)
+- include small helper to save or return image bytes and a thumbnail base64
+- ensure safe error handling
+"""
+
+src/utils/compare_text.py
+
+Paste:
+
+"""
+Copilot: Implement text comparison utilities:
+- function compare_texts(texts_a, texts_b) that handles:
+  - if page counts match: page-by-page diffs using difflib.unified_diff
+  - if mismatch: full-document diff
+- returns structured results: list of dicts {'scope', 'page', 'diff_snippet'}
+- include parameter to limit diff size
+"""
+
+src/utils/compare_table.py
+
+Paste:
+
+"""
+Copilot: Implement table comparison utilities:
+- function compare_tables(tables_a, tables_b)
+- match tables by page, then shape, then produce a sample of cell diffs
+- output list of dicts: {'page', 'table_A_shape','table_B_shape','cell_diffs_sample'}
+"""
+
+src/utils/compare_image.py
+
+Paste:
+
+"""
+Copilot: Implement image comparison utilities:
+- function compare_images(images_a, images_b)
+- compute imagehash.phash for each image and hamming distance
+- implement an optional function using CLIP if model available:
+  - compute CLIP embeddings and cosine similarity
+  - allow flag use_clip=True to use CLIP
+- returns list of matches with similarity scores and unmatched images
+"""
+
+src/utils/report.py
+
+Paste:
+
+"""
+Copilot: Implement report generation utilities:
+- function render_html_report(report_struct, out_path)
+- uses a Jinja2 template (inline or in templates/) to format:
+  - meta info, text diffs, table diffs, image diffs with embedded base64 thumbnails
+- include helper to save report and print summary
+"""
+
+
+Accept completions and review generated code. Edit prompts or add clarifying comments if Copilot doesn't include some behavior.
+
+4) Pro version script — src/pdf_compare/pro.py
+
+Open src/pdf_compare_pro.py and paste this long, explicit prompt. This tells Copilot exactly how to integrate models.
+
+"""
+Copilot: Implement Pro-version pipeline:
+- Reuse functions from src.utils.* (import extractor, compare_text, compare_table, compare_image, report)
+- Add semantic text comparison using sentence-transformers 'all-MiniLM-L6-v2'
+  - implement function embed_paragraphs(paragraphs) -> numpy array tensors
+  - compute cosine similarities and flag semantic diffs where similarity < 0.85
+- (Removed) CLIP support for images to keep the project simpler; phash-based comparison is used.
+- Add summarization step using Flan-T5-small:
+  - implement summarize_differences(diff_summary_text) -> string
+  - use transformers T5ForConditionalGeneration, T5Tokenizer
+- Implement caching of embeddings to disk (.cache_embeddings/) so repeated runs are fast
+- Implement small optimization flags: --use_clip, --use_cloud_summary (placeholder)
+- Keep memory usage low: set torch.set_num_threads(2) and operate with batch_size=1
+- Provide CLI and a function compare_pdfs_pro(pdfA, pdfB, out_html, use_clip=False)
+"""
+
+
+Let Copilot complete the file. Make sure the imports reference your utils module functions.
+
+5) Streamlit demo — src/app/streamlit_app.py
+
+Paste this prompt into the file:
+
+"""
+Copilot: Implement a Streamlit web app
+- Provide a file uploader for PDF A and PDF B
+- When both uploaded, call the baseline or pro pipeline and show:
+  - side-by-side PDF preview (first page)
+  - Text diffs (collapsible)
+  - Table diffs (tables with highlights)
+  - Image diffs (thumbnails and similarity)
+- Add toggle: 'Use Pro (MiniLM+FLAN)'
+- Provide a button to download the HTML report
+- Keep UI minimal and responsive
+"""
+
+6) Tests — tests/test_core.py
+
+Paste this prompt:
+
+"""
+Copilot: Create simple pytest tests for core functions:
+- test_extract_text_pages loads two sample PDFs in assets/ and asserts that text extraction returns pages > 0
+- test_compare_texts verifies difflib output on small strings
+- test_image_hash computes phash for two identical images and asserts hamming distance 0
+- keep tests lightweight and runnable locally
+"""
+
+
+Run tests:
+
+pytest -q
+
+
+Fix any issues Copilot generated.
+
+7) README & developer prompts — README.md
+
+Create README and paste:
+
+# AI-Driven PDF Comparison
+
+Copilot: Generate a README that explains:
+- Purpose
+- How to install (virtualenv, pip install -r requirements.txt)
+- How to run baseline: python src/pdf_compare_solution.py sample_P001.pdf sample_P002.pdf out.html
+- How to run pro: python src/pdf_compare_pro.py sample_P001.pdf sample_P002.pdf out_pro.html --use_clip
+- How to run streamlit: streamlit run src/app/streamlit_app.py
+- Hardware recommendations (Intel i5, 8GB)
+- Notes about caching model files (Hugging Face cache)
+
+8) Prompts for specific difficult parts
+
+If Copilot gives wrong or incomplete code, use these targeted prompts as in-file comments to ask it to rewrite a function.
+
+For MiniLM embedding function:
+# Copilot: implement function `get_sentence_embeddings(texts: List[str], model_name="all-MiniLM-L6-v2") -> np.ndarray`
+# - Use sentence-transformers SentenceTransformer
+# - Return numpy array of normalized vectors
+# - Add caching: save to .cache_embeddings/<sha1_of_texts>.npy and load if exists
+
+For FLAN-T5 summarizer:
+# Copilot: implement summarize(text:str, model_name="google/flan-t5-small") -> str
+# - Use tokenizer and model from transformers
+# - Limit input length (truncate) to fit model
+# - Use CPU only and set generation params (max_length=120, num_beams=2)
+# - include try/except fallback that returns a short rule-based summary if model fails
+
+For CLIP image similarity:
+# Copilot: implement compute_clip_similarity(img_bytes_a: bytes, img_bytes_b: bytes) -> float
+# - uses transformers CLIPProcessor and CLIPModel
+# - ensure CPU use and batch size 1
+# - returns float cosine similarity between normalized embeddings
+# - include fallback to imagehash when CLIP import fails
+
+9) Dockerfile (optional) — quick dev container
+
+Create Dockerfile and paste:
+
+# Copilot: produce a Dockerfile to run this project on CPU
+FROM python:3.10-slim
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY . .
+CMD ["python", "src/pdf_compare_solution.py", "assets/sample_P001.pdf", "assets/sample_P002.pdf", "report.html"]
+
+10) VS Code Copilot tips (how to drive it interactively)
+
+Paste a large descriptive comment at the top of a new file: Copilot produces a full file scaffold.
+
+Use Ctrl+Enter or Alt+Enter to ask Copilot for alternatives.
+
+Accept completions line-by-line (Tab) or block completions.
+
+When a function is partially generated, place your cursor inside and type an extra comment like # Copilot: add caching or # Copilot: make this function asynchronous to get a new completion.
+
+Use docstrings as prompts: Copilot respects natural-language instructions in docstrings.
+
+If Copilot suggests code that imports something you don’t want, edit the import comment to be explicit.
+
+11) Example exact Copilot single-file prompt (paste into a new file to produce full pdf_compare_pro.py)
+"""
+Copilot: Create a full python script pdf_compare_pro.py that:
+- Imports helper functions from src.utils.*
+- Uses sentence-transformers all-MiniLM-L6-v2 for text embeddings and compares paragraphs by cosine similarity (<0.85 => flagged)
+- Uses imagehash.phash for quick image diffs and optional CLIP (openai/clip-vit-base-patch32) when flag --use-clip is provided
+- Uses google/flan-t5-small to summarize diffs into an English paragraph (use CPU)
+- Caches embeddings in .cache_embeddings/
+- CLI: python pdf_compare_pro.py <pdfA> <pdfB> [--use_clip] [--out report.html]
+- Writes a nice HTML report showing semantics differences and the GPT/T5 summary
+- Keep code modular, with functions: load_models(), embed_texts(), compare_embeddings(), summarize(), render_report()
+"""
+
+12) After code generation — verify & run
+
+Run baseline (new package path):
+
+# Windows PowerShell: ensure src/ is on PYTHONPATH for module imports
+$env:PYTHONPATH = "src"
+python -m pdf_compare.baseline assets/sample_P001.pdf assets/sample_P002.pdf --out out_baseline.html
+
+
+Run pro (new package path):
+
+# Windows PowerShell
+$env:PYTHONPATH = "src"
+python -m pdf_compare.pro assets/sample_P001.pdf assets/sample_P002.pdf --out out_pro.html
+
+
+Run Streamlit:
+
+streamlit run src/app/streamlit_app.py
+
+Notes:
+- If you see a notice about T5Tokenizer legacy behavior, the project config suppresses it by default.
+- To enable FLAN‑T5 summarization, install sentencepiece: `pip install sentencepiece` and restart Streamlit/CLI.
+
+13) Troubleshooting tips
+
+If models fail to download: ensure internet once to cache models; after that you can go offline.
+
+If memory is tight: use torch.set_num_threads(2) and ensure batch_size=1.
+
+Convert heavy models to ONNX for better CPU performance and lower memory: use Hugging Face optimum / onnxruntime.
+
+If CLIP is too slow, revert to imagehash for image diffs.
+
+14) Interview-ready notes to paste in Copilot chat (optional)
+
+If you want Copilot to generate slides or a README section, use:
+
+Copilot: Generate a 6-slide presentation outline (title and bullet points) explaining:
+- Problem & objective
+- Baseline implementation
+- Pro implementation (models used and why)
+- Architecture diagram (text description)
+- Demo plan and sample outputs
+- Next steps & cost/scale considerations
