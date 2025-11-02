@@ -288,16 +288,84 @@ def _compare_flow(use_pro: bool):
                     summary = fn(str(path_a), str(path_b), api_key)
             except Exception as e:
                 summary = f"Error generating AI summary: {e}"
-        
+
         st.success("✅ AI Summary generated successfully!")
 
-        # Prepare and persist results so download doesn't clear the UI
+        # Compute image differences locally (do NOT send images to AI API)
+        # We only keep small thumbnails and metadata to show at the top of the AI summary section
         try:
-            from utils.pdf_generator import markdown_to_pdf  # type: ignore
-            pdf_bytes = markdown_to_pdf(
-                summary,
-                title=f"Comparison: {Path(file_a.name).stem} vs {Path(file_b.name).stem}"
-            )
+            from utils.extractor import extract_images  # type: ignore
+            from utils.compare_image import compare_images  # type: ignore
+
+            imgs_a = extract_images(str(path_a))
+            imgs_b = extract_images(str(path_b))
+            img_diffs_raw = compare_images(imgs_a, imgs_b)
+
+            # Reduce payload: keep only small fields needed for display and cap to top-N by distance
+            matches = sorted(img_diffs_raw.get("matches", []), key=lambda m: m.get("distance", 999))
+            TOP_N = 5
+            slim_matches = []
+            for m in matches[:TOP_N]:
+                a = m.get("A")
+                b = m.get("B")
+                slim_matches.append({
+                    "distance": int(m.get("distance", 0)),
+                    "A": {
+                        "page": getattr(a, "page", None),
+                        "name": getattr(a, "name", ""),
+                        "thumbnail_b64": getattr(a, "thumbnail_b64", None),
+                    },
+                    "B": {
+                        "page": getattr(b, "page", None),
+                        "name": getattr(b, "name", ""),
+                        "thumbnail_b64": getattr(b, "thumbnail_b64", None),
+                    },
+                })
+
+            slim_unmatched_a = []
+            for a in (img_diffs_raw.get("unmatched_A") or [])[:TOP_N]:
+                slim_unmatched_a.append({
+                    "page": getattr(a, "page", None),
+                    "name": getattr(a, "name", ""),
+                    "thumbnail_b64": getattr(a, "thumbnail_b64", None),
+                })
+
+            slim_unmatched_b = []
+            for b in (img_diffs_raw.get("unmatched_B") or [])[:TOP_N]:
+                slim_unmatched_b.append({
+                    "page": getattr(b, "page", None),
+                    "name": getattr(b, "name", ""),
+                    "thumbnail_b64": getattr(b, "thumbnail_b64", None),
+                })
+
+            ai_image_diffs = {
+                "matches": slim_matches,
+                "unmatched_A": slim_unmatched_a,
+                "unmatched_B": slim_unmatched_b,
+                "total_matches": len(matches),
+                "total_unmatched_A": len(img_diffs_raw.get("unmatched_A", [])),
+                "total_unmatched_B": len(img_diffs_raw.get("unmatched_B", [])),
+            }
+        except Exception as _img_err:
+            ai_image_diffs = None
+
+        # Prepare and persist results so download doesn't clear the UI
+        # Try to include images in the downloadable PDF if supported
+        try:
+            try:
+                from utils.pdf_generator import markdown_to_pdf_with_images  # type: ignore
+                pdf_bytes = markdown_to_pdf_with_images(
+                    summary,
+                    image_diffs=ai_image_diffs,
+                    title=f"Comparison: {Path(file_a.name).stem} vs {Path(file_b.name).stem}"
+                )
+            except ImportError:
+                # Fallback to text-only PDF generation
+                from utils.pdf_generator import markdown_to_pdf  # type: ignore
+                pdf_bytes = markdown_to_pdf(
+                    summary,
+                    title=f"Comparison: {Path(file_a.name).stem} vs {Path(file_b.name).stem}"
+                )
         except ImportError:
             pdf_bytes = None
             st.warning("⚠️ PDF generation requires 'reportlab'. Install with: pip install reportlab")
@@ -309,12 +377,50 @@ def _compare_flow(use_pro: bool):
             "text": summary,
             "pdf": pdf_bytes,
             "fname": f"summary_{Path(file_a.name).stem}_vs_{Path(file_b.name).stem}.pdf",
+            "image_diffs": ai_image_diffs,
         }
 
     # Persistent render of last AI summary (if available)
     if not use_pro and st.session_state.get("ai_summary"):
         data = st.session_state.ai_summary
         with st.expander("📊 AI Comparison Summary", expanded=True):
+            # Show top image differences (local compute only; no images sent to AI)
+            img_section = data.get("image_diffs")
+            if img_section:
+                st.subheader("Top image differences")
+                if img_section.get("matches"):
+                    for i, m in enumerate(img_section["matches"], start=1):
+                        dist = int(m.get('distance', 0))
+                        if dist == 0:
+                            st.caption(f"Match {i} · Identical image (pHash distance: 0)")
+                            if m["A"].get("thumbnail_b64"):
+                                st.image(f"data:image/png;base64,{m['A']['thumbnail_b64']}")
+                            st.caption(f"Appears the same in A (Page {m['A'].get('page')}) and B (Page {m['B'].get('page')})")
+                        else:
+                            st.caption(f"Match {i} · pHash distance: {dist}")
+                            ca, cb = st.columns(2)
+                            with ca:
+                                st.markdown("**Product A**")
+                                if m["A"].get("thumbnail_b64"):
+                                    st.image(f"data:image/png;base64,{m['A']['thumbnail_b64']}")
+                                st.caption(f"Page {m['A'].get('page')} · {m['A'].get('name')}")
+                            with cb:
+                                st.markdown("**Product B**")
+                                if m["B"].get("thumbnail_b64"):
+                                    st.image(f"data:image/png;base64,{m['B']['thumbnail_b64']}")
+                                st.caption(f"Page {m['B'].get('page')} · {m['B'].get('name')}")
+                else:
+                    st.caption("No close image matches found.")
+
+                # Small summary of counts
+                st.markdown(
+                    f"_Matches shown: {len(img_section.get('matches', []))} of {img_section.get('total_matches', 0)} · "
+                    f"Unmatched A: {img_section.get('total_unmatched_A', 0)} · "
+                    f"Unmatched B: {img_section.get('total_unmatched_B', 0)}_"
+                )
+                st.markdown("---")
+
+            # Then show the AI text summary below
             if isinstance(data.get("text"), str) and data["text"].startswith("Error generating AI summary"):
                 st.error(data["text"])
                 st.info("Try reducing 'AI pages used' in AI Options or trying again later.")
