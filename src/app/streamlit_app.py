@@ -57,7 +57,7 @@ size_preset = st.sidebar.selectbox(
 _HEIGHT_MAP = {"Compact": "28vh", "Comfortable": "40vh", "Spacious": "60vh"}
 dz_height = _HEIGHT_MAP.get(size_preset, "40vh")
 
-page = st.sidebar.radio("Navigation", ["Basic", "Side‑by‑Side"])
+page = st.sidebar.radio("Navigation", ["AI summarization", "Side‑by‑Side"])
 
 # Custom CSS for upload dropzones
 st.markdown(
@@ -558,7 +558,7 @@ def _side_by_side_flow():
         
         # Add legend for Compare Text mode
         if mode == "Compare Text":
-            st.info("💡 **Yellow boxes** outline text/number differences between the two PDFs")
+            st.info("💡 **Yellow** = text | **Blue** = numbers | **Red border** = images")
         
         ca, cb = st.columns(2, gap="large")
         with st.spinner("Rendering page images…"):
@@ -716,7 +716,7 @@ def _side_by_side_flow():
 
 # --- Page routing ---
 st.title(f"AI‑Driven PDF Comparison · {page}")
-if page == "Basic":
+if page == "AI summarization":
     st.caption("Quick diffs for text, tables, and images using pHash")
     _compare_flow(use_pro=False)
 else:

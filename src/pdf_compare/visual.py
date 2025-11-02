@@ -114,11 +114,11 @@ def text_diff_rects(
     pdf_a: bytes | str | Path,
     pdf_b: bytes | str | Path,
     page_index: int,
-) -> Tuple[List[fitz.Rect], List[fitz.Rect]]:
+) -> Tuple[List[Tuple[fitz.Rect, bool]], List[Tuple[fitz.Rect, bool]]]:
     """Compute rectangles of differing words for a given page pair.
 
-    Returns two lists of rectangles: (rects_in_A, rects_in_B) that represent
-    tokens involved in replace/insert/delete operations.
+    Returns two lists of tuples: (rects_in_A, rects_in_B) where each tuple is
+    (rect, is_number) to allow different highlighting for numbers.
     """
     def _get_doc(src):
         if isinstance(src, fitz.Document):
@@ -126,6 +126,10 @@ def text_diff_rects(
         if isinstance(src, (bytes, bytearray)):
             return fitz.open(stream=src, filetype="pdf"), True
         return fitz.open(str(src)), True
+    
+    def _is_number(word: str) -> bool:
+        # Match numbers with optional commas, dots, currency symbols, percentages
+        return bool(re.match(r'^[\$€£¥]?[\d,]+\.?\d*%?$', word.strip()))
 
     da, close_a = _get_doc(pdf_a)
     db, close_b = _get_doc(pdf_b)
@@ -137,13 +141,15 @@ def text_diff_rects(
         tok_a, rect_a = _page_word_tokens_and_rects(pa)
         tok_b, rect_b = _page_word_tokens_and_rects(pb)
         sm = difflib.SequenceMatcher(None, tok_a, tok_b)
-        diff_rects_a: List[fitz.Rect] = []
-        diff_rects_b: List[fitz.Rect] = []
+        diff_rects_a: List[Tuple[fitz.Rect, bool]] = []
+        diff_rects_b: List[Tuple[fitz.Rect, bool]] = []
         for tag, a0, a1, b0, b1 in sm.get_opcodes():
             if tag in ("replace", "delete"):
-                diff_rects_a.extend(rect_a[a0:a1])
+                for i in range(a0, a1):
+                    diff_rects_a.append((rect_a[i], _is_number(tok_a[i])))
             if tag in ("replace", "insert"):
-                diff_rects_b.extend(rect_b[b0:b1])
+                for i in range(b0, b1):
+                    diff_rects_b.append((rect_b[i], _is_number(tok_b[i])))
         return diff_rects_a, diff_rects_b
     finally:
         if close_a:
@@ -256,6 +262,75 @@ def text_diff_stats(
             db.close()
 
 
+def _get_image_diff_rects(
+    page_a: fitz.Page,
+    page_b: fitz.Page,
+    doc_a: fitz.Document,
+    doc_b: fitz.Document,
+) -> Tuple[List[fitz.Rect], List[fitz.Rect]]:
+    """Compare images on two pages and return bounding rectangles of different images.
+    
+    Returns:
+        Tuple of (rects_in_A, rects_in_B) for images that differ or are unique.
+    """
+    def _get_image_info(page: fitz.Page, doc: fitz.Document) -> List[Dict[str, Any]]:
+        """Extract image hash and position for each image on the page."""
+        results = []
+        image_list = page.get_images(full=False)
+        for img_info in image_list:
+            try:
+                xref = img_info[0]
+                # Get image position on page
+                rects = page.get_image_rects(xref)
+                if not rects:
+                    continue
+                # Use first rect if multiple instances
+                rect = rects[0]
+                
+                # Extract and hash the image
+                base_image = doc.extract_image(xref)
+                if base_image:
+                    img_bytes = base_image["image"]
+                    pil_img = Image.open(io.BytesIO(img_bytes))
+                    phash = str(imagehash.phash(pil_img))
+                    results.append({
+                        "hash": phash,
+                        "rect": rect,
+                        "xref": xref,
+                    })
+            except Exception:
+                # If extraction fails, skip this image
+                continue
+        return results
+    
+    imgs_a = _get_image_info(page_a, doc_a)
+    imgs_b = _get_image_info(page_b, doc_b)
+    
+    diff_rects_a: List[fitz.Rect] = []
+    diff_rects_b: List[fitz.Rect] = []
+    
+    # Simple position-based matching: compare images in order
+    max_count = max(len(imgs_a), len(imgs_b))
+    for i in range(max_count):
+        img_a = imgs_a[i] if i < len(imgs_a) else None
+        img_b = imgs_b[i] if i < len(imgs_b) else None
+        
+        if img_a is None:
+            # Image only in B
+            if img_b:
+                diff_rects_b.append(img_b["rect"])
+        elif img_b is None:
+            # Image only in A
+            diff_rects_a.append(img_a["rect"])
+        else:
+            # Both present: compare hashes
+            if img_a["hash"] != img_b["hash"]:
+                diff_rects_a.append(img_a["rect"])
+                diff_rects_b.append(img_b["rect"])
+    
+    return diff_rects_a, diff_rects_b
+
+
 def render_page_pair_png_highlight(
     pdf_a: bytes | str | Path,
     pdf_b: bytes | str | Path,
@@ -263,7 +338,7 @@ def render_page_pair_png_highlight(
     zoom: float = 2.0,
     opacity: float = 0.18,  # 0..1
 ) -> Tuple[bytes, bytes]:
-    """Render page pair with rectangles highlighting differing words.
+    """Render page pair with rectangles highlighting differing words and images.
 
     Returns two PNG byte blobs with overlays drawn.
     """
@@ -280,20 +355,28 @@ def render_page_pair_png_highlight(
         pb = db[page_index]
         pixa = pa.get_pixmap(matrix=mat, alpha=False)
         pixb = pb.get_pixmap(matrix=mat, alpha=False)
+        
+        # Detect image differences
+        img_rects_a, img_rects_b = _get_image_diff_rects(pa, pb, da, db)
 
-        def _overlay(pix: fitz.Pixmap, rects: List[fitz.Rect]) -> bytes:
+        def _overlay(pix: fitz.Pixmap, text_rects: List[Tuple[fitz.Rect, bool]], img_rects: List[fitz.Rect]) -> bytes:
             img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
             img = img.convert("RGBA")
             draw = ImageDraw.Draw(img, "RGBA")
-            for r in rects:
+            # Text diff rectangles: yellow for text, blue for numbers
+            for r, is_number in text_rects:
                 rr = [r.x0 * zoom, r.y0 * zoom, r.x1 * zoom, r.y1 * zoom]
-                # Use outline only instead of filled rectangle for readability
-                draw.rectangle(rr, outline=(255, 215, 0, 255), width=2)
+                color = (30, 144, 255, 255) if is_number else (255, 215, 0, 255)  # Blue or yellow
+                draw.rectangle(rr, outline=color, width=2)
+            # Image diff rectangles in red with thicker border
+            for r in img_rects:
+                rr = [r.x0 * zoom, r.y0 * zoom, r.x1 * zoom, r.y1 * zoom]
+                draw.rectangle(rr, outline=(255, 69, 0, 255), width=3)  # Red-orange border
             with io.BytesIO() as buf:
                 img.save(buf, format="PNG")
                 return buf.getvalue()
 
-        return _overlay(pixa, rects_a), _overlay(pixb, rects_b)
+        return _overlay(pixa, rects_a, img_rects_a), _overlay(pixb, rects_b, img_rects_b)
 
 
 def merge_side_by_side_with_text_highlight(
@@ -301,10 +384,16 @@ def merge_side_by_side_with_text_highlight(
     pdf_b: bytes | str | Path,
     out_path: Optional[str | Path] = None,
     max_pages: Optional[int] = None,
-    fill_color: Tuple[float, float, float] = (1.0, 0.84, 0.0),  # gold
+    text_color: Tuple[float, float, float] = (1.0, 0.84, 0.0),  # gold/yellow
+    number_color: Tuple[float, float, float] = (0.12, 0.56, 1.0),  # blue
+    image_border_color: Tuple[float, float, float] = (1.0, 0.27, 0.0),  # red-orange
     add_legend: bool = True,
 ) -> bytes:
-    """Merge PDFs side-by-side and overlay rectangle outlines on text diffs.
+    """Merge PDFs side-by-side and overlay highlights on text/number/image diffs.
+    
+    - Text differences: yellow fill
+    - Number differences: blue fill
+    - Image differences: red border (no fill)
 
     Returns the merged PDF bytes (and writes to out_path if provided).
     """
@@ -338,7 +427,7 @@ def merge_side_by_side_with_text_highlight(
                 shape.commit()
                 
                 # Legend text
-                legend_text = "Yellow highlights indicate text/number differences | PDF A (Left) vs PDF B (Right)"
+                legend_text = "Yellow = text | Blue = numbers | Red border = images | PDF A (Left) vs PDF B (Right)"
                 new_page.insert_text(
                     (10, 18),
                     legend_text,
@@ -347,12 +436,26 @@ def merge_side_by_side_with_text_highlight(
                     fontname="helv"
                 )
                 
-                # Small yellow sample box (filled to match the highlights)
+                # Yellow sample box (text)
                 sample_shape = new_page.new_shape()
-                sample_rect = fitz.Rect(W - 120, 8, W - 105, 22)
+                sample_rect = fitz.Rect(W - 180, 8, W - 165, 22)
                 sample_shape.draw_rect(sample_rect)
-                sample_shape.finish(color=None, fill=fill_color, fill_opacity=0.3)
+                sample_shape.finish(color=None, fill=text_color, fill_opacity=0.3)
                 sample_shape.commit()
+                
+                # Blue sample box (numbers)
+                num_sample_shape = new_page.new_shape()
+                num_sample_rect = fitz.Rect(W - 160, 8, W - 145, 22)
+                num_sample_shape.draw_rect(num_sample_rect)
+                num_sample_shape.finish(color=None, fill=number_color, fill_opacity=0.3)
+                num_sample_shape.commit()
+                
+                # Red border sample box (images)
+                img_sample_shape = new_page.new_shape()
+                img_sample_rect = fitz.Rect(W - 140, 8, W - 125, 22)
+                img_sample_shape.draw_rect(img_sample_rect)
+                img_sample_shape.finish(color=image_border_color, fill=None, width=2)
+                img_sample_shape.commit()
             
             # Show PDF pages (shifted down if legend is present)
             new_page.show_pdf_page(fitz.Rect(0, legend_height, wa, legend_height + ha), da, i)
@@ -360,19 +463,34 @@ def merge_side_by_side_with_text_highlight(
 
             # Compute diff rects on original pages
             tok_rects_a, tok_rects_b = text_diff_rects(pdf_a=da, pdf_b=db, page_index=i)
+            img_rects_a, img_rects_b = _get_image_diff_rects(pa, pb, da, db)
             
-            # Use filled highlights with opacity for PDF export
-            def _add_annots(rects: List[fitz.Rect], x_shift: float = 0.0, y_shift: float = 0.0):
-                for r in rects:
+            # Helper to add filled highlights for text/numbers
+            def _add_filled_annots(rects: List[Tuple[fitz.Rect, bool]], x_shift: float = 0.0, y_shift: float = 0.0):
+                for r, is_number in rects:
                     rect = fitz.Rect(r.x0 + x_shift, r.y0 + y_shift, r.x1 + x_shift, r.y1 + y_shift)
-                    # Draw filled rectangle with light opacity
+                    color = number_color if is_number else text_color
                     shape = new_page.new_shape()
                     shape.draw_rect(rect)
-                    shape.finish(color=None, fill=fill_color, fill_opacity=0.3)
+                    shape.finish(color=None, fill=color, fill_opacity=0.3)
+                    shape.commit()
+            
+            # Helper to add border-only highlights for images
+            def _add_border_annots(rects: List[fitz.Rect], x_shift: float = 0.0, y_shift: float = 0.0):
+                for r in rects:
+                    rect = fitz.Rect(r.x0 + x_shift, r.y0 + y_shift, r.x1 + x_shift, r.y1 + y_shift)
+                    shape = new_page.new_shape()
+                    shape.draw_rect(rect)
+                    shape.finish(color=image_border_color, fill=None, width=2)
                     shape.commit()
 
-            _add_annots(tok_rects_a, 0.0, legend_height)
-            _add_annots(tok_rects_b, wa, legend_height)
+            # Text/number highlights with fills
+            _add_filled_annots(tok_rects_a, 0.0, legend_height)
+            _add_filled_annots(tok_rects_b, wa, legend_height)
+            
+            # Image highlights with borders only
+            _add_border_annots(img_rects_a, 0.0, legend_height)
+            _add_border_annots(img_rects_b, wa, legend_height)
 
         data = out.tobytes()
         if out_path:
